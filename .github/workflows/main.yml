@@ -1,0 +1,73 @@
+name: Download file from commit message
+
+on:
+  push:
+    # Run only on pushes to the main branch (adjust as needed)
+    branches:
+      - main
+    # Optional: ignore pushes that contain [skip ci] to prevent loops
+    paths-ignore:
+      - 'downloads/**'   # Prevents re-triggering when we commit new files
+
+# Grant permissions for pushing back to the repo
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    # Skip this run if it's triggered by the bot's own commit
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Need full history? No, but we want to push back later
+          fetch-depth: 1
+
+      - name: Extract download URL from commit message
+        id: extract
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          echo "Commit message: $COMMIT_MSG"
+          # Find first http/https URL in the message
+          URL=$(echo "$COMMIT_MSG" | grep -oP 'https?://[^\s]+' | head -1)
+          if [ -z "$URL" ]; then
+            echo "No URL found in commit message. Exiting."
+            echo "url_found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "Found URL: $URL"
+          echo "url_found=true" >> $GITHUB_OUTPUT
+          echo "download_url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Download file
+        if: steps.extract.outputs.url_found == 'true'
+        run: |
+          URL="${{ steps.extract.outputs.download_url }}"
+          # Create directory (change 'downloads' to any folder you like)
+          mkdir -p downloads
+          # Download with original filename (or use a fixed name)
+          curl -L -O --remote-name --output-dir downloads "$URL"
+          # Show what was downloaded
+          ls -la downloads/
+
+      - name: Commit and push the downloaded file
+        if: steps.extract.outputs.url_found == 'true'
+        run: |
+          # Check if there are any changes
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          # Configure git user
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Add all new/modified files under downloads/
+          git add downloads/
+          # Commit with a marker to skip future runs
+          git commit -m "Add downloaded file [skip ci]"
+          # Push back to the same branch
+          git push
